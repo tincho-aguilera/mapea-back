@@ -8,6 +8,7 @@ import httpx
 import asyncio
 import json
 import re
+import os
 from bs4 import BeautifulSoup
 
 # Configurar logging
@@ -52,13 +53,17 @@ class InmoupScraper(BaseScraper):
             # Primero intentamos usar httpx (método más liviano)
             buildings = await self._get_buildings_httpx(request)
             
-            # Si no hay imágenes reales, recurrimos a Playwright como fallback
+            # Si no hay imágenes reales, recurrimos a Playwright como fallback si no estamos en Render
             missing_images = all(
                 "/bundles/inmoup/images/v11.03/empty-photo-box.jpg" in building.get("image", "")
                 for building in buildings
             )
             
-            if missing_images and buildings:
+            # Solo usar Playwright si no estamos en Render o si se forzó su uso con una variable de entorno
+            in_render = os.environ.get('RENDER', 'false').lower() == 'true'
+            force_playwright = os.environ.get('FORCE_PLAYWRIGHT', 'false').lower() == 'true'
+            
+            if missing_images and buildings and (not in_render or force_playwright):
                 logger.warning("Todas las imágenes son placeholders, intentando con Playwright")
                 try:
                     # Intentamos obtener solo las imágenes con Playwright
@@ -73,8 +78,18 @@ class InmoupScraper(BaseScraper):
         except Exception as e:
             logger.warning(f"Error con httpx, intentando con Playwright completo: {str(e)}")
             try:
-                # Si falla completamente httpx, intentamos con Playwright como respaldo
-                return await self._get_buildings_playwright(request)
+                # Si falla completamente httpx, intentamos con Playwright como respaldo solo si no estamos en Render
+                in_render = os.environ.get('RENDER', 'false').lower() == 'true'
+                force_playwright = os.environ.get('FORCE_PLAYWRIGHT', 'false').lower() == 'true'
+                
+                if not in_render or force_playwright:
+                    return await self._get_buildings_playwright(request)
+                else:
+                    logger.error("No se puede usar Playwright en Render sin configuración especial")
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Error al obtener datos de inmuebles de Inmoup"
+                    )
             except Exception as e:
                 logger.error(f"Error general en el scraper de Inmoup: {str(e)}")
                 raise HTTPException(
@@ -123,11 +138,26 @@ class InmoupScraper(BaseScraper):
         
         try:
             async with async_playwright() as p:
-                # Usar opciones más robustas para entornos de producción
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=['--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage']
-                )
+                # Configuración adaptada para entornos como Render
+                browser_type = p.chromium
+                browser_launch_args = {
+                    'headless': True,
+                    'args': ['--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage']
+                }
+                
+                # Verificar si estamos en Render.com y usar un enfoque diferente
+                in_render = os.environ.get('RENDER', 'false').lower() == 'true'
+                if in_render:
+                    # En Render, podemos usar Chrome en lugar de instalar Chromium
+                    logger.info("Usando navegador para Render.com")
+                    browser_type = p.chromium
+                    browser_launch_args = {
+                        'headless': True,
+                        'args': ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--disable-gpu']
+                    }
+                
+                # Lanzar el navegador con la configuración adaptada
+                browser = await browser_type.launch(**browser_launch_args)
                 
                 page = await browser.new_page()
                 
