@@ -4,7 +4,7 @@ playwright
 requests
 aiohttp
 aiodns
-cchardet
+charset-normalizer
 ujson
 python-jose
 passlib
