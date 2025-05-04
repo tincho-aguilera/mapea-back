@@ -12,3 +12,5 @@ python-multipart
 cryptography
 bcrypt
 python-dotenv
+httpx
+beautifulsoup4

@@ -2,8 +2,13 @@ from playwright.async_api import async_playwright
 import logging
 from fastapi import HTTPException
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Union
 from .base_scraper import BaseScraper
+import httpx
+import asyncio
+import json
+from bs4 import BeautifulSoup
+import re
 
 # Configurar logging
 logger = logging.getLogger(__name__)
@@ -24,8 +29,176 @@ class InmoupScraper(BaseScraper):
             Lista de propiedades encontradas
         """
         try:
+            # Primero intentamos usar httpx (método más liviano)
+            return await self._get_buildings_httpx(request)
+        except Exception as e:
+            logger.warning(f"Error con httpx, intentando con Playwright: {str(e)}")
+            try:
+                # Si falla, intentamos con Playwright como fallback
+                return await self._get_buildings_playwright(request)
+            except Exception as e:
+                logger.error(f"Error general en el scraper de Inmoup: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Error interno del servidor al procesar datos de inmuebles de Inmoup"
+                )
+
+    async def _get_buildings_httpx(self, request: Optional[BaseModel]) -> List[Dict[str, Any]]:
+        """
+        Obtiene propiedades usando httpx (método liviano sin navegador)
+        """
+        # Construir URL basada en los filtros proporcionados
+        base_url = "https://inmoup.com.ar/"
+
+        # Determinar tipo de propiedad para la URL
+        prop_type = "casas-en-alquiler"
+        if request and request.property_type and "depart" in request.property_type.lower():
+            prop_type = "departamentos-en-alquiler"
+
+        url = f"{base_url}{prop_type}?favoritos=0&limit=10000&prevEstadoMap=&ordenar=recientes"
+
+        # Añadir localidades si están especificadas
+        if request and request.cities and len(request.cities) > 0:
+            # Convertir la lista de IDs de ciudades a formato de URL
+            city_ids = request.cities
+            # Si city_ids ya viene como una cadena con el formato "2,1,8", usarla directamente
+            if isinstance(city_ids, str):
+                # Reemplazamos las comas con %2C para la codificación URL
+                formatted_ids = city_ids.replace(',', '%2C')
+                url += f"&localidades={formatted_ids}"
+            else:
+                # Si es una lista, la unimos con %2C
+                formatted_ids = '%2C'.join(str(city_id) for city_id in city_ids)
+                url += f"&localidades={formatted_ids}"
+        else:
+            # Valores por defecto si no se especifican ciudades
+            url += "&localidades=1%2C2%2C7%2C19"
+
+        url += "&lastZoom=13&precio%5Bmin%5D=&precio%5Bmax%5D=&moneda=1&sup_cubierta%5Bmin%5D=&sup_cubierta%5Bmax%5D=&sup_total%5Bmin%5D=&sup_total%5Bmax%5D=&recientes=mes"
+
+        logger.info(f"Haciendo solicitud HTTP a: {url}")
+        
+        # Usar httpx para hacer la solicitud
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, follow_redirects=True)
+            
+            if response.status_code != 200:
+                logger.error(f"Error en la solicitud HTTP: {response.status_code}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"No se pudo acceder a inmoup.com.ar. Código de estado: {response.status_code}"
+                )
+            
+            # Extraer los datos de propiedades usando BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            articles = soup.find_all('article')
+            
+            logger.info(f"Se encontraron {len(articles)} propiedades con httpx")
+            
+            # También intentamos extraer el JSON de propiedades que a veces se incluye en el HTML
+            buildings = []
+            
+            # Buscar scripts en la página que puedan contener datos JSON
+            scripts = soup.find_all('script')
+            properties_data = None
+            
+            for script in scripts:
+                if script.string and 'window.rdb_properties = ' in script.string:
+                    # Extraer el JSON de propiedades
+                    json_str = re.search(r'window\.rdb_properties = (\[.*?\]);', script.string, re.DOTALL)
+                    if json_str:
+                        try:
+                            properties_data = json.loads(json_str.group(1))
+                            break
+                        except json.JSONDecodeError:
+                            pass
+            
+            # Si encontramos datos JSON, los procesamos
+            if properties_data:
+                for prop in properties_data:
+                    try:
+                        buildings.append({
+                            "price": prop.get('precio', ''),
+                            "direccion": f"{prop.get('calle', '')}, {prop.get('localidad', '')}",
+                            "image": prop.get('foto_portada', ''),
+                            "additional_images": prop.get('fotos', []),
+                            "habitaciones": str(prop.get('cant_habitaciones', '')),
+                            "supTotal": str(prop.get('sup_total', '')),
+                            "supCub": str(prop.get('sup_cubierta', '')),
+                            "garage": bool(prop.get('garage', False)),
+                            "banos": str(prop.get('cant_banos', '')),
+                            "url": f"https://inmoup.com.ar{prop.get('url', '')}",
+                            "kid": str(prop.get('id', '')),
+                            "hasgeolocation": "true" if prop.get('lat') and prop.get('lng') else "false",
+                            "latitude": str(prop.get('lat', '')),
+                            "longitude": str(prop.get('lng', '')),
+                            "source": "inmoup"
+                        })
+                    except Exception as e:
+                        logger.error(f"Error procesando propiedad JSON: {str(e)}")
+            
+            # Si no se pudieron extraer propiedades del JSON, extraerlas del HTML
+            if not buildings:
+                for article in articles:
+                    try:
+                        # Extraer datos de los artículos HTML
+                        price = article.get('precio', '')
+                        kid = article.get('kid', '')
+                        lat = article.get('lat', '')
+                        lng = article.get('lng', '')
+                        hasgeolocation = article.get('hasgeolocation', '')
+                        sup_total = article.get('sup_t', '')
+                        sup_cub = article.get('sup_c', '')
+                        habitaciones = article.get('ser_1', '')
+                        banos = article.get('ser_2', '')
+                        garage = article.get('ser_3', '')
+                        
+                        # Extraer dirección
+                        direccion_elem = article.select_one('div.property-data')
+                        direccion = direccion_elem.text.strip().replace('\n\n', ', ') if direccion_elem else ""
+                        
+                        # Obtener la imagen principal
+                        img_elem = article.select_one('img')
+                        image = img_elem.get('src', '') if img_elem else ""
+                        
+                        # Obtener URL de la propiedad
+                        url_elem = article.select_one('a.cont-photo')
+                        prop_url = f"https://inmoup.com.ar{url_elem.get('href', '')}" if url_elem else ""
+                        
+                        buildings.append({
+                            "price": price,
+                            "direccion": direccion,
+                            "image": image,
+                            "additional_images": [],
+                            "habitaciones": habitaciones,
+                            "supTotal": sup_total,
+                            "supCub": sup_cub,
+                            "garage": garage,
+                            "banos": banos,
+                            "url": prop_url,
+                            "kid": kid,
+                            "hasgeolocation": hasgeolocation,
+                            "latitude": lat,
+                            "longitude": lng,
+                            "source": "inmoup"
+                        })
+                    except Exception as e:
+                        logger.error(f"Error procesando propiedad HTML: {str(e)}")
+            
+            return buildings
+
+    async def _get_buildings_playwright(self, request: Optional[BaseModel]) -> List[Dict[str, Any]]:
+        """
+        Implementación del método para obtener propiedades de Inmoup usando Playwright como fallback
+        """
+        try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                # Usar opciones más robustas para entornos de producción
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage']
+                )
+                
                 page = await browser.new_page()
 
                 # Construir URL basada en los filtros proporcionados
@@ -57,10 +230,10 @@ class InmoupScraper(BaseScraper):
 
                 url += "&lastZoom=13&precio%5Bmin%5D=&precio%5Bmax%5D=&moneda=1&sup_cubierta%5Bmin%5D=&sup_cubierta%5Bmax%5D=&sup_total%5Bmin%5D=&sup_total%5Bmax%5D=&recientes=mes"
 
-                logger.info(f"Navegando a URL: {url}")
+                logger.info(f"Navegando a URL con Playwright: {url}")
 
                 # Aumentar el timeout a 60 segundos y agregar logs para debug
-                logger.info("Iniciando navegación a inmoup.com.ar")
+                logger.info("Iniciando navegación a inmoup.com.ar con Playwright")
                 try:
                     await page.goto(
                         url,
@@ -68,7 +241,7 @@ class InmoupScraper(BaseScraper):
                         wait_until="domcontentloaded"  # Cambiar el evento de espera
                     )
                 except Exception as e:
-                    logger.error(f"Error durante la navegación: {str(e)}")
+                    logger.error(f"Error durante la navegación con Playwright: {str(e)}")
                     # Mostrar un error más amigable al usuario
                     raise HTTPException(
                         status_code=503,
@@ -79,7 +252,7 @@ class InmoupScraper(BaseScraper):
                 elements = await page.query_selector_all('article')
                 buildings = []
 
-                logger.info(f"Se encontraron {len(elements)} propiedades")
+                logger.info(f"Se encontraron {len(elements)} propiedades con Playwright")
                 for element in elements:
                     try:
                         price = await element.get_attribute('precio') or ""
@@ -134,7 +307,8 @@ class InmoupScraper(BaseScraper):
                             "kid": kid,
                             "hasgeolocation": hasgeolocation,
                             "latitude": lat,
-                            "longitude": lng
+                            "longitude": lng,
+                            "source": "inmoup"
                         })
                     except Exception as e:
                         logger.error(f"Error procesando propiedad: {str(e)}")
@@ -143,7 +317,7 @@ class InmoupScraper(BaseScraper):
                 await browser.close()
                 return buildings
         except Exception as e:
-            logger.error(f"Error general en el scraper de Inmoup: {str(e)}")
+            logger.error(f"Error general en el scraper de Inmoup con Playwright: {str(e)}")
             raise HTTPException(
                 status_code=500,
                 detail="Error interno del servidor al procesar datos de inmuebles de Inmoup"
