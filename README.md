@@ -19,8 +19,8 @@ API de backend para la aplicación Mapea, desarrollada con FastAPI. Proporciona 
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/tu-usuario/mapea-backend.git
-cd mapea-backend
+git clone https://github.com/tincho-aguilera/mapea-back.git
+cd mapea-back
 
 # Crear entorno virtual
 python -m venv venv
@@ -43,7 +43,7 @@ API_PASSWORD=tu_contraseña
 API_HOST=0.0.0.0
 API_PORT=8000
 DEBUG=False
-ALLOWED_ORIGINS=https://tu-frontend.vercel.app
+ALLOWED_ORIGINS=https://mapea-kappa.vercel.app
 ```
 
 ## Desarrollo
