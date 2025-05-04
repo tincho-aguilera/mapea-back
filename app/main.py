@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi import FastAPI, HTTPException, Request, Depends, status, Form, Header
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware import Middleware
 from .scraper import get_buildings
@@ -12,11 +12,12 @@ import os
 import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from collections import defaultdict
+from typing import Optional
 
 # Importaciones para autenticación
 from .auth.security import (
-    Token, User, authenticate_user, create_access_token,
-    ACCESS_TOKEN_EXPIRE_MINUTES, fake_users_db
+    Token, User, authenticate_user, authenticate_user_processed, create_access_token,
+    ACCESS_TOKEN_EXPIRE_MINUTES, fake_users_db, generate_csrf_token, csrf_tokens
 )
 from .auth.dependencies import get_current_active_user
 
@@ -67,6 +68,9 @@ class BuildingSearchRequest(BaseModel):
     cities: list[str]
     property_type: str
 
+class CsrfToken(BaseModel):
+    csrf_token: str
+
 app = FastAPI(
     title="Alquileres Scraper API",
     description="API para obtener datos de alquileres de diferentes sitios web",
@@ -89,7 +93,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
 )
 
 @app.get("/")
@@ -99,12 +103,74 @@ async def root():
                    "Usá /api/properties/search para consultar propiedades."
     }
 
-# Endpoint para obtener token JWT
+# Endpoint para obtener un token CSRF
+@app.get("/auth/csrf-token", response_model=CsrfToken)
+async def get_csrf_token(request: Request):
+    """
+    Endpoint para obtener un token CSRF.
+    """
+    token = generate_csrf_token()
+    # Almacenar el token con la dirección IP del cliente
+    csrf_tokens[token] = request.client.host
+    return {"csrf_token": token}
+
+# Endpoint para obtener clave pública (simulado, para implementación futura)
+@app.get("/auth/public-key")
+async def get_public_key():
+    """
+    Endpoint para obtener la clave pública para cifrado asimétrico.
+    """
+    # En una implementación real, aquí se devolvería una clave pública RSA
+    # Por ahora, devolvemos un error 501 Not Implemented
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Cifrado asimétrico no implementado"
+    )
+
+# Endpoint para obtener token JWT (versión mejorada)
 @app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login_for_access_token(
+    request: Request,
+    username: Optional[str] = Form(None),
+    password: Optional[str] = Form(None),
+    secure_auth: Optional[str] = Form(None),
+    encoding: Optional[str] = Form(None),
+    csrf_token: Optional[str] = Form(None),
+    x_csrf_token: Optional[str] = Header(None)
+):
     """
     Endpoint para autenticación y obtención de token JWT.
-    Proporciona un nombre de usuario y contraseña para obtener un token de acceso.
+    Soporta autenticación estándar o segura con ofuscación.
+    """
+    # Crear un diccionario con los datos del formulario
+    form_data = {
+        "username": username,
+        "password": password,
+        "encoding": encoding,
+        "csrf_token": csrf_token or x_csrf_token
+    }
+
+    # Agregar secure_auth si existe
+    if secure_auth:
+        form_data["secure_auth"] = secure_auth
+
+    # Usar la nueva función para autenticar con credenciales procesadas
+    user = authenticate_user_processed(fake_users_db, form_data, request)
+
+    # Crear token de acceso (JWT)
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# Método antiguo mantenido por compatibilidad, pero marcado como obsoleto
+@app.post("/token/legacy")
+async def login_for_access_token_legacy(form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    Endpoint para autenticación y obtención de token JWT (método legacy).
+    Este método está obsoleto y se mantendrá solo por compatibilidad.
     """
     user = authenticate_user(fake_users_db, form_data.username, form_data.password)
     if not user:
