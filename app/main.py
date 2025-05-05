@@ -100,31 +100,26 @@ async def root():
                    "Usá /api/properties/search para consultar propiedades."
     }
 
-# Endpoint para obtener clave pública (simulado, para implementación futura)
+# Endpoint para obtener clave pública (ahora simplemente devuelve OK)
 @app.get("/auth/public-key")
 async def get_public_key():
     """
     Endpoint para obtener la clave pública para cifrado asimétrico.
+    Ahora simplemente devuelve OK para compatibilidad con el frontend.
     """
-    # En una implementación real, aquí se devolvería una clave pública RSA
-    # Por ahora, devolvemos un error 501 Not Implemented
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Cifrado asimétrico no implementado"
-    )
+    return {"status": "ok", "message": "No se requiere cifrado asimétrico"}
 
-# Endpoint para obtener token JWT (versión mejorada)
+# Endpoint para obtener token JWT (versión simplificada)
 @app.post("/token", response_model=Token)
 async def login_for_access_token(
     request: Request,
     username: Optional[str] = Form(None),
     password: Optional[str] = Form(None),
-    secure_auth: Optional[str] = Form(None),
     encoding: Optional[str] = Form(None)
 ):
     """
     Endpoint para autenticación y obtención de token JWT.
-    Soporta autenticación estándar o segura con ofuscación.
+    Soporta autenticación estándar o con ofuscación básica.
     """
     # Crear un diccionario con los datos del formulario
     form_data = {
@@ -133,11 +128,7 @@ async def login_for_access_token(
         "encoding": encoding
     }
 
-    # Agregar secure_auth si existe
-    if secure_auth:
-        form_data["secure_auth"] = secure_auth
-
-    # Usar la nueva función para autenticar con credenciales procesadas
+    # Usar la función para autenticar con credenciales procesadas
     user = authenticate_user_processed(fake_users_db, form_data, request)
 
     # Crear token de acceso (JWT)
