@@ -9,6 +9,7 @@ import secrets
 from passlib.context import CryptContext
 from dotenv import load_dotenv
 from fastapi import Request, HTTPException, status
+import logging
 
 # Cargar variables de entorno
 load_dotenv()
@@ -17,6 +18,11 @@ load_dotenv()
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "default_insecure_key")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+
+# Configuración para tokens CSRF
+CSRF_TOKEN_EXPIRE_HOURS = int(os.getenv("CSRF_TOKEN_EXPIRE_HOURS", "24"))
+CSRF_ENABLED = os.getenv("CSRF_ENABLED", "true").lower() == "true"
+CSRF_ALLOWED_ORIGINS = os.getenv("CSRF_ALLOWED_ORIGINS", "*").split(",")
 
 # Modelo de usuario simplificado para autenticación interna
 class Token(BaseModel):
@@ -56,35 +62,72 @@ fake_users_db = {
     }
 }
 
-# Diccionario para almacenar tokens CSRF
+# Configurar logging
+logger = logging.getLogger(__name__)
+
+# Diccionario para almacenar tokens CSRF con TTL
 csrf_tokens = {}
+
+# Función para limpiar tokens expirados (llamada periódicamente)
+def clean_expired_csrf_tokens():
+    current_time = datetime.utcnow()
+    expired_tokens = [token for token, data in csrf_tokens.items() 
+                      if current_time > data.get('expires_at', current_time)]
+    for token in expired_tokens:
+        csrf_tokens.pop(token, None)
 
 # Función para generar un token CSRF
 def generate_csrf_token():
-    return secrets.token_hex(32)
+    token = secrets.token_hex(32)
+    # Usar la duración configurada en las variables de entorno
+    expires_at = datetime.utcnow() + timedelta(hours=CSRF_TOKEN_EXPIRE_HOURS)
+    csrf_tokens[token] = {
+        'created_at': datetime.utcnow(),
+        'expires_at': expires_at,
+    }
+    return token
 
 # Función para verificar token CSRF
 def verify_csrf_token(token: str, request: Request) -> bool:
+    # Si CSRF está desactivado, siempre retornar válido
+    if not CSRF_ENABLED:
+        return True
+        
+    # Limpiar tokens expirados primero
+    clean_expired_csrf_tokens()
+    
     # Si no hay token, considerarlo válido temporalmente para compatibilidad
     # TODO: Hacer esto obligatorio una vez que el frontend esté actualizado completamente
     if not token:
         return True
 
-    # Si el token está en nuestro diccionario y corresponde a la IP del cliente, es válido
-    client_host = request.client.host if request.client else None
-
     # Para desarrollo local, siempre considerar válido si es localhost
+    client_host = request.client.host if request.client else None
     if client_host in ["127.0.0.1", "localhost", "::1"]:
         return True
-
-    # Verificar si el token existe y corresponde a la IP
-    is_valid = csrf_tokens.get(token) == client_host
-
-    # Si es válido, eliminamos el token para que sea de un solo uso
-    if is_valid:
-        csrf_tokens.pop(token, None)
-
-    return is_valid
+    
+    # Verificar si el referer está en los orígenes permitidos
+    origin = request.headers.get("Origin") or request.headers.get("Referer")
+    if origin and CSRF_ALLOWED_ORIGINS != ["*"]:
+        is_allowed_origin = False
+        for allowed_origin in CSRF_ALLOWED_ORIGINS:
+            if allowed_origin in origin:
+                is_allowed_origin = True
+                break
+        if not is_allowed_origin:
+            logger.warning(f"Origen no permitido para CSRF: {origin}")
+            return False
+    
+    # En producción, verificar si el token existe y no ha expirado
+    token_data = csrf_tokens.get(token)
+    if token_data and datetime.utcnow() <= token_data.get('expires_at'):
+        # No eliminamos el token después de validarlo para permitir
+        # múltiples intentos en aplicaciones SPA o peticiones ajax
+        return True
+        
+    # Registrar el error para debugging
+    logger.warning(f"CSRF token inválido o expirado: {token}")
+    return False
 
 # Función para decodificar credenciales en base64
 def decode_base64_credentials(username_b64: str, password_b64: str) -> tuple:
