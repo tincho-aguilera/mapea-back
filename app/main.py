@@ -17,7 +17,7 @@ from typing import Optional
 # Importaciones para autenticación
 from .auth.security import (
     Token, User, authenticate_user, authenticate_user_processed, create_access_token,
-    ACCESS_TOKEN_EXPIRE_MINUTES, fake_users_db, generate_csrf_token, csrf_tokens
+    ACCESS_TOKEN_EXPIRE_MINUTES, fake_users_db
 )
 from .auth.dependencies import get_current_active_user
 
@@ -68,9 +68,6 @@ class BuildingSearchRequest(BaseModel):
     cities: list[str]
     property_type: str
 
-class CsrfToken(BaseModel):
-    csrf_token: str
-
 app = FastAPI(
     title="Alquileres Scraper API",
     description="API para obtener datos de alquileres de diferentes sitios web",
@@ -103,17 +100,6 @@ async def root():
                    "Usá /api/properties/search para consultar propiedades."
     }
 
-# Endpoint para obtener un token CSRF
-@app.get("/auth/csrf-token", response_model=CsrfToken)
-async def get_csrf_token(request: Request):
-    """
-    Endpoint para obtener un token CSRF.
-    """
-    token = generate_csrf_token()
-    # Almacenar el token con la dirección IP del cliente
-    csrf_tokens[token] = request.client.host
-    return {"csrf_token": token}
-
 # Endpoint para obtener clave pública (simulado, para implementación futura)
 @app.get("/auth/public-key")
 async def get_public_key():
@@ -134,9 +120,7 @@ async def login_for_access_token(
     username: Optional[str] = Form(None),
     password: Optional[str] = Form(None),
     secure_auth: Optional[str] = Form(None),
-    encoding: Optional[str] = Form(None),
-    csrf_token: Optional[str] = Form(None),
-    x_csrf_token: Optional[str] = Header(None)
+    encoding: Optional[str] = Form(None)
 ):
     """
     Endpoint para autenticación y obtención de token JWT.
@@ -146,8 +130,7 @@ async def login_for_access_token(
     form_data = {
         "username": username,
         "password": password,
-        "encoding": encoding,
-        "csrf_token": csrf_token or x_csrf_token
+        "encoding": encoding
     }
 
     # Agregar secure_auth si existe
