@@ -342,7 +342,7 @@ class MendozaPropScraper(BaseScraper):
                 "supCub": str(prop.get("m2_covered", "")),
                 "banos": str(prop.get("bathrooms", "")),
                 "garage": bool(prop.get("parking", 0) > 0),
-                "url": f"https://www.mendozaprop.com/alquiler/propiedad/{property_id}",
+                "url": f"https://www.mendozaprop.com/alquiler/{property_id}",
                 "latitude": str(latitude),
                 "longitude": str(longitude),
                 "hasgeolocation": bool(latitude and longitude),
