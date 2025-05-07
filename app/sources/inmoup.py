@@ -121,11 +121,13 @@ class InmoupScraper(BaseScraper):
                 # Aumentar el timeout a 60 segundos y agregar logs para debug
                 logger.info("Iniciando navegación a inmoup.com.ar con Playwright")
                 try:
+                    # Reducir el timeout a 30 segundos para evitar bloqueos innecesariamente largos
                     await page.goto(
                         url,
-                        timeout=60000,  # Incrementar a 60 segundos
-                        wait_until="domcontentloaded"  # Cambiar el evento de espera
+                        timeout=30000,  # Reducido de 60000 a 30000 ms (30 segundos)
+                        wait_until="domcontentloaded"  # Evento que permite cargar antes sin esperar recursos completos
                     )
+                    logger.info("Página cargada correctamente")
                 except Exception as e:
                     logger.error(f"Error durante la navegación con Playwright: {str(e)}")
                     # Mostrar un error más amigable al usuario

@@ -100,65 +100,42 @@ async def root():
                    "Usá /api/properties/search para consultar propiedades."
     }
 
-# Endpoint para obtener clave pública (ahora simplemente devuelve OK)
-@app.get("/auth/public-key")
-async def get_public_key():
-    """
-    Endpoint para obtener la clave pública para cifrado asimétrico.
-    Ahora simplemente devuelve OK para compatibilidad con el frontend.
-    """
-    return {"status": "ok", "message": "No se requiere cifrado asimétrico"}
-
 # Endpoint para obtener token JWT (versión simplificada)
 @app.post("/token", response_model=Token)
 async def login_for_access_token(
     request: Request,
     username: Optional[str] = Form(None),
-    password: Optional[str] = Form(None),
-    encoding: Optional[str] = Form(None)
+    password: Optional[str] = Form(None)
 ):
     """
     Endpoint para autenticación y obtención de token JWT.
     Soporta autenticación estándar o con ofuscación básica.
     """
+    logger.info("Iniciando proceso de autenticación")
+    start_time = time.time()
+    logger.info(f"Datos de entrada: username={username}, password={password}")
     # Crear un diccionario con los datos del formulario
     form_data = {
         "username": username,
-        "password": password,
-        "encoding": encoding
+        "password": password
     }
 
     # Usar la función para autenticar con credenciales procesadas
     user = authenticate_user_processed(fake_users_db, form_data, request)
 
+    auth_time = time.time() - start_time
+    logger.info(f"Autenticación completada en {auth_time:.2f} segundos")
+
     # Crear token de acceso (JWT)
+    token_start = time.time()
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
-
-# Método antiguo mantenido por compatibilidad, pero marcado como obsoleto
-@app.post("/token/legacy")
-async def login_for_access_token_legacy(form_data: OAuth2PasswordRequestForm = Depends()):
-    """
-    Endpoint para autenticación y obtención de token JWT (método legacy).
-    Este método está obsoleto y se mantendrá solo por compatibilidad.
-    """
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Usuario o contraseña incorrectos",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Crear token de acceso (JWT)
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
+    token_time = time.time() - token_start
+    total_time = time.time() - start_time
+    logger.info(f"Token generado en {token_time:.2f} segundos. Tiempo total: {total_time:.2f} segundos")
 
     return {"access_token": access_token, "token_type": "bearer"}
 

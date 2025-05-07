@@ -8,6 +8,11 @@ import base64
 from passlib.context import CryptContext
 from dotenv import load_dotenv
 from fastapi import Request, HTTPException, status
+import logging
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Cargar variables de entorno
 load_dotenv()
@@ -55,40 +60,28 @@ fake_users_db = {
     }
 }
 
-# Función para decodificar credenciales en base64
-def decode_base64_credentials(username_b64: str, password_b64: str) -> tuple:
+# Función para descifrar texto con formato personalizado simple
+def decrypt_custom_format(encrypted_text):
     try:
-        username = base64.b64decode(username_b64).decode('utf-8')
-        password = base64.b64decode(password_b64).decode('utf-8')
-        return username, password
+        logger.info(f"Procesando formato personalizado: {encrypted_text[:15]}...")
+
+        # Verificar si tiene el prefijo que indica nuestro formato personalizado
+        if encrypted_text.startswith("CUSTOM_ENC:"):
+            # Extraer la parte codificada en base64
+            base64_part = encrypted_text[10:]  # Quitar "CUSTOM_ENC:"
+
+            # Decodificar de base64 a texto plano
+            plaintext = base64.b64decode(base64_part).decode('utf-8')
+
+            logger.info(f"Descifrado exitoso usando formato personalizado")
+            return plaintext
+        else:
+            # Si no tiene el prefijo esperado, intentar otros métodos
+            raise ValueError("No es un formato personalizado reconocido")
+
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Error en la decodificación de credenciales"
-        )
-
-# Función para procesar una solicitud de autenticación segura
-def process_secure_auth(secure_auth_json: str) -> tuple:
-    try:
-        # Convertir la cadena JSON a diccionario
-        secure_auth = json.loads(secure_auth_json)
-
-        # Extraer username y password
-        username_b64 = secure_auth.get('username')
-        password_b64 = secure_auth.get('password')
-
-        # Decodificar si es necesario
-        if secure_auth.get('encrypted'):
-            # Aquí implementaríamos descifrado con clave privada si fuera necesario
-            pass
-
-        # Por ahora, simplemente decodificamos de base64
-        return decode_base64_credentials(username_b64, password_b64)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error procesando autenticación segura: {str(e)}"
-        )
+        logger.error(f"Error al procesar formato personalizado: {str(e)}")
+        raise
 
 # Función para obtener un usuario
 def get_user(db, username: str):
@@ -108,29 +101,39 @@ def authenticate_user(fake_db, username: str, password: str):
 
 # Función para autenticar usuario con credenciales procesadas
 def authenticate_user_processed(fake_db, form_data, request: Request):
-    # Verificar si las credenciales vienen en modo seguro
-    if 'secure_auth' in form_data:
-        username, password = process_secure_auth(form_data.get('secure_auth'))
+    logger.info("Autenticando usuario con credenciales procesadas")
+
+    username = form_data.get('username', '')
+    encrypted_password = form_data.get('password', '')
+    password = ""
+
+    # Verificar si es nuestro formato personalizado
+    if encrypted_password.startswith("CUSTOM_ENC:"):
+        try:
+            logger.info("Detectado formato personalizado")
+            password = decrypt_custom_format(encrypted_password)
+            logger.info(f"Contraseña descifrada: {password[:2]}***")
+        except Exception as e:
+            logger.error(f"Error al procesar formato personalizado: {str(e)}")
+            # En caso de error, usar la contraseña sin procesar
+            password = encrypted_password
     else:
-        # Verificar si las credenciales están codificadas en base64
-        if form_data.get('encoding') == 'base64':
-            username, password = decode_base64_credentials(
-                form_data.get('username', ''),
-                form_data.get('password', '')
-            )
-        else:
-            # Autenticación estándar
-            username = form_data.get('username', '')
-            password = form_data.get('password', '')
+        # Si no está cifrada, usar directamente
+        password = encrypted_password
+        logger.info("Usando contraseña sin cifrar")
 
     # Autenticar con las credenciales procesadas
+    logger.info(f"Intentando autenticar usuario: {username}")
     user = authenticate_user(fake_db, username, password)
     if not user:
+        logger.warning(f"Autenticación fallida para el usuario: {username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales incorrectas",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    logger.info(f"Usuario autenticado correctamente: {username}")
     return user
 
 # Función para crear un token de acceso
